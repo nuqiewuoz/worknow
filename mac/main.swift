@@ -98,7 +98,7 @@ final class FloatingPanel: NSPanel {
         self.isMovableByWindowBackground = true
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         self.hidesOnDeactivate = false
-        self.minSize = NSSize(width: 320, height: 240)
+        self.minSize = NSSize(width: 280, height: 110)
     }
 }
 
@@ -113,6 +113,7 @@ final class WorknowContentView: NSView {
     private let closeButton = NSButton()
 
     var onClose: (() -> Void)?
+    var onSizeChanged: ((NSSize) -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -234,6 +235,25 @@ final class WorknowContentView: NSView {
         if sessions.isEmpty && dirtyRepos.isEmpty {
             addEmpty("No active work right now.")
         }
+
+        // Let the host (AppDelegate) resize the panel to fit content so the
+        // empty state isn't a giant blank box.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let target = self.preferredContentSize()
+            self.onSizeChanged?(target)
+        }
+    }
+
+    /// Compute the panel content size needed to display the current stack
+    /// without scrolling, clamped to a tidy minimum/maximum range.
+    func preferredContentSize() -> NSSize {
+        let bodyFitting = stack.fittingSize
+        let headerHeight: CGFloat = 36
+        let chromePadding: CGFloat = 16
+        let height = min(620, max(120, bodyFitting.height + headerHeight + chromePadding))
+        let width: CGFloat = 380
+        return NSSize(width: width, height: height)
     }
 
     private func sessionRow(_ sess: WorknowSnapshot.Session) -> NSView {
@@ -440,6 +460,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         content.autoresizingMask = [.width, .height]
         panel.contentView = content
         content.onClose = { [weak self] in self?.hidePanel() }
+        content.onSizeChanged = { [weak self] size in self?.resizePanelTo(contentSize: size) }
 
         // Restore position if we have one, else anchor near the top-right.
         if let saved = UserDefaults.standard.string(forKey: positionKey) {
@@ -470,6 +491,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func persistFrame() {
         UserDefaults.standard.set(NSStringFromRect(panel.frame), forKey: positionKey)
+    }
+
+    /// Resize panel to fit content while keeping the *top-left* corner stable
+    /// — otherwise growing/shrinking would visually wobble as the user
+    /// reads, since AppKit window origin is bottom-left by default.
+    private func resizePanelTo(contentSize: NSSize) {
+        var frame = panel.frame
+        let oldTopY = frame.origin.y + frame.size.height
+        // Add minimal chrome compensation; borderless panel has none, so 0.
+        let newSize = NSSize(width: max(panel.minSize.width, contentSize.width),
+                             height: max(panel.minSize.height, contentSize.height))
+        frame.size = newSize
+        frame.origin.y = oldTopY - newSize.height
+        // Avoid emitting move/resize churn that would spam UserDefaults.
+        if NSEqualSizes(panel.frame.size, newSize) { return }
+        panel.setFrame(frame, display: true, animate: false)
     }
 
     @objc private func togglePanel() {
