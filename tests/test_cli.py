@@ -200,3 +200,103 @@ def test_batch_process_cwd_empty_list():
 
 def test_inspect_git_repos_returns_empty_for_no_paths():
     assert cli.inspect_git_repos([], recent_days=7) == []
+
+
+# ---------- attach_agent_presence ----------
+
+def test_attach_agent_presence_marks_repo_with_matching_cwd():
+    project = cli.GitProject(
+        path=pathlib.Path("/tmp/foo"),
+        branch="main", dirty=False, changes="clean",
+        last_commit="x", recent_commits=[],
+    )
+    proc = cli.ProcessInfo(pid="1", command="claude", cwd="/tmp/foo/src")
+    cli.attach_agent_presence([project], [proc])
+    assert project.has_active_agent is True
+
+
+def test_attach_agent_presence_ignores_unrelated_cwds():
+    project = cli.GitProject(
+        path=pathlib.Path("/tmp/foo"),
+        branch="main", dirty=False, changes="clean",
+        last_commit="x", recent_commits=[],
+    )
+    proc = cli.ProcessInfo(pid="1", command="claude", cwd="/tmp/bar")
+    cli.attach_agent_presence([project], [proc])
+    assert project.has_active_agent is False
+
+
+def test_attach_agent_presence_substring_doesnt_falsely_match():
+    # cwd /tmp/foobar should NOT match project /tmp/foo — only equal paths
+    # or path + separator count.
+    project = cli.GitProject(
+        path=pathlib.Path("/tmp/foo"),
+        branch="main", dirty=False, changes="clean",
+        last_commit="x", recent_commits=[],
+    )
+    proc = cli.ProcessInfo(pid="1", command="claude", cwd="/tmp/foobar")
+    cli.attach_agent_presence([project], [proc])
+    assert project.has_active_agent is False
+
+
+# ---------- GitProject.is_active ----------
+
+def test_is_active_when_dirty():
+    p = cli.GitProject(
+        path=pathlib.Path("/tmp/x"), branch="main", dirty=True,
+        changes="M:1", last_commit="x", recent_commits=[],
+    )
+    assert p.is_active is True
+
+
+def test_is_active_when_agent_present():
+    p = cli.GitProject(
+        path=pathlib.Path("/tmp/x"), branch="main", dirty=False,
+        changes="clean", last_commit="x", recent_commits=[],
+        has_active_agent=True,
+    )
+    assert p.is_active is True
+
+
+def test_not_is_active_when_clean_and_no_agent():
+    p = cli.GitProject(
+        path=pathlib.Path("/tmp/x"), branch="main", dirty=False,
+        changes="clean", last_commit="x", recent_commits=[],
+    )
+    assert p.is_active is False
+
+
+# ---------- render_json ----------
+
+def test_render_json_includes_active_count():
+    import json as _json
+    projects = [
+        cli.GitProject(
+            path=pathlib.Path("/tmp/a"), branch="main", dirty=True,
+            changes="M:1", last_commit="x", recent_commits=[],
+        ),
+        cli.GitProject(
+            path=pathlib.Path("/tmp/b"), branch="topic", dirty=False,
+            changes="clean", last_commit="y", recent_commits=["recent"],
+            has_active_agent=True,
+        ),
+        cli.GitProject(
+            path=pathlib.Path("/tmp/c"), branch="main", dirty=False,
+            changes="clean", last_commit="z", recent_commits=[],
+        ),
+    ]
+    payload = _json.loads(cli.render_json(projects, [], ""))
+    assert payload["schema_version"] == 1
+    # Active: /tmp/a (dirty), /tmp/b (agent). Not /tmp/c.
+    assert payload["active_tasks_count"] == 2
+    assert len(payload["repos"]) == 3
+    # Active repos sorted to the top.
+    assert payload["repos"][0]["is_active"] is True
+    assert payload["repos"][-1]["is_active"] is False
+
+
+def test_render_json_truncates_processes_to_40():
+    import json as _json
+    procs = [cli.ProcessInfo(pid=str(i), command=f"cmd{i}") for i in range(60)]
+    payload = _json.loads(cli.render_json([], procs, ""))
+    assert len(payload["processes"]) == 40

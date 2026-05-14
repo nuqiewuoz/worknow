@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLIST="$HOME/Library/LaunchAgents/com.qun.worknow-mac.plist"
+
+if [ ! -x "$DIR/worknow-mac" ]; then
+  echo "worknow-mac not built; running build.sh first…"
+  "$DIR/build.sh"
+fi
+
+cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.qun.worknow-mac</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$DIR/worknow-mac</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardOutPath</key>
+  <string>$HOME/Library/Logs/worknow-mac.log</string>
+  <key>StandardErrorPath</key>
+  <string>$HOME/Library/Logs/worknow-mac.err.log</string>
+</dict>
+</plist>
+EOF
+
+launchctl bootout "gui/$(id -u)" "$PLIST" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$(id -u)" "$PLIST"
+echo "Installed worknow-mac launchd agent: $PLIST"
+echo "Look for the worknow icon in your menu bar."

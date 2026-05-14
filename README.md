@@ -9,7 +9,10 @@ It scans:
 - running `claude`, `codex`, `gemini`, `openclaw`, `xcodebuild`, `gradle`, `npm`/`pnpm`/`yarn`, plus anything you add
 - optional `openclaw sessions list` / `tasks list` output when the binary is available
 
-Output is a single readable Markdown file, defaulting to `~/.openclaw/workspace/current-work.md`.
+Output is two sidecar files at `~/.openclaw/workspace/`:
+
+- `current-work.md` — readable Markdown view, friendly for cross-machine browsing
+- `current-work.json` — structured payload consumed by the native macOS menu bar app in `mac/`
 
 Requires Python ≥ 3.11.
 
@@ -78,6 +81,31 @@ recent_commit_days = 7
 ```
 
 If no config exists, `worknow` uses the defaults baked into `cli.py`.
+
+## Native macOS menu bar app
+
+A small AppKit menu bar app lives in `mac/`. It reads the JSON sidecar the CLI writes and surfaces:
+
+- a menu bar badge with the **active task count** — a "task" is a tracked git repo that is dirty OR has a coding agent process running inside it
+- a draggable floating panel (click the menu bar icon to toggle) listing active repos and agent processes
+- auto-refresh every 30 seconds; panel position persists across launches
+
+Build & run:
+
+```bash
+cd mac
+./build.sh             # compiles a single-file Swift binary (no Xcode project)
+./worknow-mac          # run once, look in the menu bar
+```
+
+Auto-start at login:
+
+```bash
+./install-launchd-macos
+./uninstall-launchd-macos   # to remove
+```
+
+The app only displays data — it does not run the scanner itself. Schedule the Python CLI (e.g. via `bin/install-launchd-macos`) so the JSON stays fresh.
 
 ## Git sync across machines
 

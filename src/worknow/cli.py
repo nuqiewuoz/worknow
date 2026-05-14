@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import dataclasses
 import datetime as dt
+import json
 import os
 import pathlib
 import platform
@@ -57,6 +58,11 @@ class GitProject:
     changes: str
     last_commit: str
     recent_commits: list[str]
+    has_active_agent: bool = False
+
+    @property
+    def is_active(self) -> bool:
+        return self.dirty or self.has_active_agent
 
 
 @dataclasses.dataclass
@@ -260,6 +266,49 @@ def escape_md_inline(text: str) -> str:
     return text.replace("`", "\\`")
 
 
+def attach_agent_presence(projects: list[GitProject], processes: list[ProcessInfo]) -> None:
+    """Mark a project as having an active agent if any process's cwd is inside
+    the project path. Mutates projects in place.
+    """
+    agent_cwds = [p.cwd for p in processes if p.cwd]
+    for project in projects:
+        project_str = str(project.path)
+        project.has_active_agent = any(
+            cwd == project_str or cwd.startswith(project_str + os.sep)
+            for cwd in agent_cwds
+        )
+
+
+def render_json(projects: list[GitProject], processes: list[ProcessInfo], sessions_text: str) -> str:
+    now = dt.datetime.now().astimezone().isoformat()
+    payload = {
+        "schema_version": 1,
+        "generated_at": now,
+        "host": platform.node(),
+        "active_tasks_count": sum(1 for p in projects if p.is_active),
+        "repos": [
+            {
+                "name": p.path.name,
+                "path": str(p.path),
+                "branch": p.branch,
+                "dirty": p.dirty,
+                "changes": p.changes,
+                "last_commit": p.last_commit,
+                "recent_commits": p.recent_commits,
+                "has_active_agent": p.has_active_agent,
+                "is_active": p.is_active,
+            }
+            for p in sorted(projects, key=lambda x: (not x.is_active, not x.dirty, x.path.name.lower()))
+        ],
+        "processes": [
+            {"pid": proc.pid, "command": proc.command, "cwd": proc.cwd}
+            for proc in processes[:40]
+        ],
+        "sessions_text": sessions_text[:6000] if sessions_text else "",
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
 def render(projects: list[GitProject], processes: list[ProcessInfo], sessions_text: str, config: dict) -> str:
     now = dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
     host = platform.node()
@@ -325,10 +374,14 @@ def generate(config: dict) -> pathlib.Path:
         list(config.get("process_keywords", [])),
         list(config.get("ignored_process_fragments", [])),
     )
+    attach_agent_presence(projects, processes)
     sessions_text = openclaw_sessions()
     output = expand(str(config["output"]))
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render(projects, processes, sessions_text, config))
+    # Sidecar JSON for native UIs (e.g. mac/ menu bar app).
+    json_output = output.with_suffix(".json")
+    json_output.write_text(render_json(projects, processes, sessions_text))
     return output
 
 
