@@ -207,21 +207,34 @@ final class WorknowContentView: NSView {
 
         let active = snap.repos.filter { $0.is_active }
         let idle = snap.repos.filter { !$0.is_active }
+        let relevantProcesses = processesInsideTrackedRepos(snap)
 
         if !active.isEmpty {
             addSectionHeader("Active")
             for repo in active { stack.addArrangedSubview(repoRow(repo)) }
         }
-        if !snap.processes.isEmpty {
+        if !relevantProcesses.isEmpty {
             addSectionHeader("Agents")
-            for proc in snap.processes.prefix(10) { stack.addArrangedSubview(processRow(proc)) }
+            for proc in relevantProcesses.prefix(10) { stack.addArrangedSubview(processRow(proc)) }
         }
         if !idle.isEmpty {
             addSectionHeader("Other tracked repos")
             for repo in idle.prefix(8) { stack.addArrangedSubview(repoRow(repo, dim: true)) }
         }
-        if active.isEmpty && snap.processes.isEmpty {
+        if active.isEmpty && relevantProcesses.isEmpty {
             addEmpty("No active work right now.")
+        }
+    }
+
+    /// Only surface agent processes whose cwd is inside a tracked repo —
+    /// the keyword scan in the CLI picks up plenty of infrastructure
+    /// (Claude.app helpers, MCP servers, plugin daemons) that match
+    /// `claude` / `bun` / `node` etc. but don't reflect actual work.
+    private func processesInsideTrackedRepos(_ snap: WorknowSnapshot) -> [WorknowSnapshot.Proc] {
+        let repoPaths = snap.repos.map { $0.path }
+        return snap.processes.filter { proc in
+            guard let cwd = proc.cwd else { return false }
+            return repoPaths.contains { cwd == $0 || cwd.hasPrefix($0 + "/") }
         }
     }
 
