@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PLIST="$HOME/Library/LaunchAgents/com.qun.worknow.plist"
+mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.local/bin"
+ln -sf "$DIR/bin/worknow" "$HOME/.local/bin/worknow"
+cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.qun.worknow</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$DIR/bin/worknow</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$HOME/Library/Logs/worknow.log</string>
+  <key>StandardErrorPath</key>
+  <string>$HOME/Library/Logs/worknow.err.log</string>
+</dict>
+</plist>
+EOF
+launchctl bootout "gui/$(id -u)" "$PLIST" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$(id -u)" "$PLIST"
+launchctl kickstart -k "gui/$(id -u)/com.qun.worknow"
+echo "Installed worknow launchd job: $PLIST"

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SOURCE="${BASH_SOURCE[0]}"
+DIR="$(SOURCE="$SOURCE" python3 - <<'PY'
+import os, pathlib
+source = pathlib.Path(os.environ['SOURCE']).expanduser()
+print(source.resolve().parent.parent)
+PY
+)"
+PYTHONPATH="$DIR/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m worknow.cli "$@"

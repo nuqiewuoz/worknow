@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "worknow"
+version = "0.1.0"
+description = "Automatically track active coding work across local agent windows and git projects"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Qun" }]
+dependencies = []
+
+[project.scripts]
+worknow = "worknow.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
