@@ -343,9 +343,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.title = "•"
             button.font = NSFont.menuBarFont(ofSize: 0)
             button.target = self
-            button.action = #selector(togglePanel)
+            button.action = #selector(statusItemClicked)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
+    }
+
+    @objc private func statusItemClicked() {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || (event?.modifierFlags.contains(.control) ?? false) {
+            showContextMenu()
+        } else {
+            togglePanel()
+        }
+    }
+
+    private func showContextMenu() {
+        let menu = NSMenu()
+        let toggleTitle = panel.isVisible ? "Hide panel" : "Show panel"
+        menu.addItem(NSMenuItem(title: toggleTitle, action: #selector(togglePanel), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Refresh now", action: #selector(refreshNow), keyEquivalent: "r"))
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Quit worknow", action: #selector(quitApp), keyEquivalent: "q"))
+        for item in menu.items { item.target = self }
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    @objc private func refreshNow() { loadAndApply() }
+
+    @objc private func quitApp() {
+        NSApp.terminate(nil)
     }
 
     private func setupPanel() {
