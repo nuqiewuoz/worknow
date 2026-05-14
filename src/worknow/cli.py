@@ -1,27 +1,26 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import dataclasses
 import datetime as dt
 import os
 import pathlib
 import platform
-import shlex
 import subprocess
 import sys
 import time
-try:
-    import tomllib  # Python 3.11+
-except ModuleNotFoundError:  # pragma: no cover - Python 3.9/3.10 fallback
-    tomllib = None
+import tomllib
 from typing import Iterable
 
+from worknow import __version__
 
-DEFAULT_CONFIG = {
+
+DEFAULT_CONFIG: dict = {
     "output": "~/.openclaw/workspace/current-work.md",
     "project_roots": [
         "~/Project",
-        "/Volumes/MOVESPEED/Data/Project",
+        "~/projects",
         "~/.openclaw/workspace",
     ],
     "process_keywords": [
@@ -45,6 +44,9 @@ DEFAULT_CONFIG = {
         "/Applications/Claude.app/Contents/Frameworks/Squirrel.framework",
     ],
 }
+
+RECENT_COMMITS_LIMIT = 5
+GIT_WORKERS = 8
 
 
 @dataclasses.dataclass
@@ -70,7 +72,13 @@ def expand(path: str) -> pathlib.Path:
 
 def run(cmd: list[str], cwd: pathlib.Path | None = None, timeout: int = 5) -> str:
     try:
-        return subprocess.check_output(cmd, cwd=str(cwd) if cwd else None, text=True, stderr=subprocess.DEVNULL, timeout=timeout).strip()
+        return subprocess.check_output(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+        ).strip()
     except Exception:
         return ""
 
@@ -79,57 +87,29 @@ def load_config() -> dict:
     config = dict(DEFAULT_CONFIG)
     cfg_path = expand("~/.config/worknow/config.toml")
     if cfg_path.exists():
-        if tomllib:
-            with cfg_path.open("rb") as f:
-                user_cfg = tomllib.load(f)
-        else:
-            user_cfg = parse_simple_toml(cfg_path.read_text())
-        config.update(user_cfg)
+        with cfg_path.open("rb") as f:
+            config.update(tomllib.load(f))
     return config
 
 
-def parse_simple_toml(text: str) -> dict:
-    """Tiny TOML subset parser for Python 3.9's system interpreter.
+def dict_to_toml(data: dict) -> str:
+    """Render the small subset of types used by DEFAULT_CONFIG to TOML.
 
-    Supports the config shape this project writes: string, int, and multi-line
-    arrays of quoted strings. It is intentionally conservative.
+    Supports str, int, and list[str]. Anything else would surface a TypeError —
+    intentional, since this is only meant to seed the user's config file.
     """
-    result: dict = {}
-    lines = iter(text.splitlines())
-    for raw in lines:
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = [part.strip() for part in line.split("=", 1)]
-        if value == "[":
-            items: list[str] = []
-            for arr_raw in lines:
-                arr_line = arr_raw.strip()
-                if arr_line.startswith("#") or not arr_line:
-                    continue
-                if arr_line == "]":
-                    break
-                items.extend(parse_array_items(arr_line))
-            result[key] = items
-        elif value.startswith("[") and value.endswith("]"):
-            result[key] = parse_array_items(value[1:-1])
-        elif value.startswith('"') and value.endswith('"'):
-            result[key] = value[1:-1]
+    lines: list[str] = []
+    for key, value in data.items():
+        if isinstance(value, str):
+            lines.append(f'{key} = "{value}"')
+        elif isinstance(value, int):
+            lines.append(f"{key} = {value}")
+        elif isinstance(value, list):
+            items = ",\n  ".join(f'"{item}"' for item in value)
+            lines.append(f"{key} = [\n  {items},\n]")
         else:
-            try:
-                result[key] = int(value)
-            except ValueError:
-                result[key] = value
-    return result
-
-
-def parse_array_items(text: str) -> list[str]:
-    items: list[str] = []
-    for part in text.rstrip(",").split(","):
-        part = part.strip().rstrip(",")
-        if part.startswith('"') and part.endswith('"'):
-            items.append(part[1:-1])
-    return items
+            raise TypeError(f"Unsupported config value type: {type(value).__name__}")
+    return "\n".join(lines) + "\n"
 
 
 def find_git_repos(roots: Iterable[str], max_projects: int) -> list[pathlib.Path]:
@@ -146,8 +126,7 @@ def find_git_repos(roots: Iterable[str], max_projects: int) -> list[pathlib.Path
         except OSError:
             pass
         for candidate in candidates:
-            git_dir = candidate / ".git"
-            if git_dir.exists():
+            if (candidate / ".git").exists():
                 resolved = candidate.resolve()
                 if resolved not in seen:
                     seen.add(resolved)
@@ -164,13 +143,30 @@ def inspect_git_repo(path: pathlib.Path, recent_days: int) -> GitProject | None:
     status = run(["git", "status", "--porcelain"], cwd=path)
     changes = summarize_status(status)
     last_commit = run(["git", "log", "-1", "--pretty=%cr · %s"], cwd=path) or "no commits"
-    since = f"{recent_days}.days"
-    recent = run(["git", "log", f"--since={since}", "--pretty=%cr · %s", "-5"], cwd=path)
+    recent = run(
+        ["git", "log", f"--since={recent_days}.days", "--pretty=%cr · %s", f"-{RECENT_COMMITS_LIMIT}"],
+        cwd=path,
+    )
     recent_commits = [line for line in recent.splitlines() if line]
     # Show active repos first: dirty, non-main branch, or recent commit.
     if not status and branch in {"main", "master", "develop"} and not recent_commits:
         return None
-    return GitProject(path=path, branch=branch, dirty=bool(status), changes=changes, last_commit=last_commit, recent_commits=recent_commits)
+    return GitProject(
+        path=path,
+        branch=branch,
+        dirty=bool(status),
+        changes=changes,
+        last_commit=last_commit,
+        recent_commits=recent_commits,
+    )
+
+
+def inspect_git_repos(paths: list[pathlib.Path], recent_days: int) -> list[GitProject]:
+    if not paths:
+        return []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=GIT_WORKERS) as pool:
+        results = list(pool.map(lambda p: inspect_git_repo(p, recent_days), paths))
+    return [r for r in results if r is not None]
 
 
 def summarize_status(status: str) -> str:
@@ -189,9 +185,9 @@ def list_processes(keywords: list[str], ignored_fragments: list[str] | None = No
     else:
         raw = run(["ps", "-eo", "pid=,command="], timeout=10)
     own_pid = str(os.getpid())
-    rows: list[ProcessInfo] = []
-    lowered_keywords = [k.lower() for k in keywords]
     ignored_fragments = ignored_fragments or []
+    lowered_keywords = [k.lower() for k in keywords]
+    matched: list[ProcessInfo] = []
     for line in raw.splitlines():
         line = line.strip()
         if not line:
@@ -202,26 +198,52 @@ def list_processes(keywords: list[str], ignored_fragments: list[str] | None = No
         lc = command.lower()
         if any(fragment in command for fragment in ignored_fragments):
             continue
-        if any(k in lc for k in lowered_keywords):
-            if "worknow" in lc and "python" in lc:
-                continue
-            rows.append(ProcessInfo(pid=pid, command=command[:220], cwd=process_cwd(pid)))
-    return rows
+        if not any(k in lc for k in lowered_keywords):
+            continue
+        if "worknow" in lc and "python" in lc:
+            continue
+        matched.append(ProcessInfo(pid=pid, command=command[:220]))
+    if matched:
+        cwds = batch_process_cwd([p.pid for p in matched])
+        for proc in matched:
+            proc.cwd = cwds.get(proc.pid)
+    return matched
 
 
-def process_cwd(pid: str) -> str | None:
+def batch_process_cwd(pids: list[str]) -> dict[str, str]:
+    """Resolve cwd for many pids in one syscall round.
+
+    On macOS uses a single `lsof -a -p pid1,pid2,... -d cwd -Fpn`. The `-F`
+    output is a stream of `p<pid>` / `n<path>` markers — we walk it
+    statefully, mapping the latest pid we saw to the next n-line.
+    On Linux reads `/proc/<pid>/cwd` symlinks (cheap, no subprocess).
+    """
+    if not pids:
+        return {}
     if platform.system() == "Darwin":
-        # lsof is best-effort and may be slow/permission-limited.
-        out = run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"], timeout=2)
+        # lsof's pid list is comma-separated; `-a` ANDs the pid filter with
+        # `-d cwd` so we only get the working-directory descriptor.
+        out = run(["lsof", "-a", "-p", ",".join(pids), "-d", "cwd", "-Fpn"], timeout=6)
+        result: dict[str, str] = {}
+        current_pid: str | None = None
         for line in out.splitlines():
-            if line.startswith("n"):
-                return line[1:]
-    elif pathlib.Path(f"/proc/{pid}/cwd").exists():
+            if not line:
+                continue
+            if line.startswith("p"):
+                current_pid = line[1:]
+            elif line.startswith("n") and current_pid:
+                result[current_pid] = line[1:]
+        return result
+    # Linux
+    result = {}
+    for pid in pids:
+        cwd_link = pathlib.Path(f"/proc/{pid}/cwd")
         try:
-            return str(pathlib.Path(f"/proc/{pid}/cwd").resolve())
+            if cwd_link.exists():
+                result[pid] = str(cwd_link.resolve())
         except Exception:
-            return None
-    return None
+            continue
+    return result
 
 
 def openclaw_sessions() -> str:
@@ -231,6 +253,11 @@ def openclaw_sessions() -> str:
         if out:
             return out
     return ""
+
+
+def escape_md_inline(text: str) -> str:
+    """Escape backticks so commit messages don't break inline code spans."""
+    return text.replace("`", "\\`")
 
 
 def render(projects: list[GitProject], processes: list[ProcessInfo], sessions_text: str, config: dict) -> str:
@@ -246,16 +273,15 @@ def render(projects: list[GitProject], processes: list[ProcessInfo], sessions_te
     if not projects:
         lines.append("No active git projects found from configured roots.")
     for p in sorted(projects, key=lambda x: (not x.dirty, x.path.name.lower())):
-        rel = str(p.path)
         lines.append(f"### {p.path.name}")
-        lines.append(f"- Path: `{rel}`")
+        lines.append(f"- Path: `{p.path}`")
         lines.append(f"- Branch: `{p.branch}`")
         lines.append(f"- State: `{p.changes}`")
-        lines.append(f"- Last commit: {p.last_commit}")
+        lines.append(f"- Last commit: {escape_md_inline(p.last_commit)}")
         if p.recent_commits:
             lines.append("- Recent:")
-            for c in p.recent_commits[:3]:
-                lines.append(f"  - {c}")
+            for c in p.recent_commits:
+                lines.append(f"  - {escape_md_inline(c)}")
         lines.append("")
     lines.append("## Agent / Build Processes")
     lines.append("")
@@ -263,7 +289,7 @@ def render(projects: list[GitProject], processes: list[ProcessInfo], sessions_te
         lines.append("No matching agent/build processes found.")
     for proc in processes[:40]:
         cwd = f" · cwd: `{proc.cwd}`" if proc.cwd else ""
-        lines.append(f"- `{proc.pid}`{cwd} — `{proc.command}`")
+        lines.append(f"- `{proc.pid}`{cwd} — `{escape_md_inline(proc.command)}`")
     lines.append("")
     if sessions_text:
         lines.append("## OpenClaw Sessions / Tasks")
@@ -274,7 +300,10 @@ def render(projects: list[GitProject], processes: list[ProcessInfo], sessions_te
         lines.append("")
     lines.append("## Notes")
     lines.append("")
-    lines.append("This file is generated by `worknow`; do not hand-maintain it. Tune machine-specific roots in `~/.config/worknow/config.toml`.")
+    lines.append(
+        "This file is generated by `worknow`; do not hand-maintain it. "
+        "Tune machine-specific roots in `~/.config/worknow/config.toml`."
+    )
     lines.append("")
     return "\n".join(lines)
 
@@ -284,37 +313,14 @@ def write_default_config_if_missing() -> pathlib.Path:
     if cfg_path.exists():
         return cfg_path
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    content = """# Machine-local worknow config. Safe to edit; not stored in the repo.
-output = "~/.openclaw/workspace/current-work.md"
-
-project_roots = [
-  "~/Project",
-  "/Volumes/MOVESPEED/Data/Project",
-  "~/.openclaw/workspace",
-]
-
-process_keywords = [
-  "claude", "codex", "gemini", "openclaw", "xcodebuild", "gradle", "npm", "pnpm", "yarn"
-]
-
-ignored_process_fragments = [
-  "Google Chrome Helper",
-  "chrome_crashpad_handler",
-  "/Applications/Claude.app/Contents/Frameworks/Claude Helper",
-  "/Applications/Claude.app/Contents/MacOS/Claude",
-  "/Applications/Claude.app/Contents/Frameworks/Squirrel.framework",
-]
-
-max_projects = 80
-recent_commit_days = 7
-"""
-    cfg_path.write_text(content)
+    header = "# Machine-local worknow config. Safe to edit; not stored in the repo.\n"
+    cfg_path.write_text(header + dict_to_toml(DEFAULT_CONFIG))
     return cfg_path
 
 
 def generate(config: dict) -> pathlib.Path:
     repos = find_git_repos(config["project_roots"], int(config.get("max_projects", 80)))
-    projects = [p for repo in repos if (p := inspect_git_repo(repo, int(config.get("recent_commit_days", 7))))]
+    projects = inspect_git_repos(repos, int(config.get("recent_commit_days", 7)))
     processes = list_processes(
         list(config.get("process_keywords", [])),
         list(config.get("ignored_process_fragments", [])),
@@ -331,19 +337,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config-init", action="store_true", help="write default config if missing")
     parser.add_argument("--output", help="override output markdown path")
     parser.add_argument("--watch", type=int, metavar="SECONDS", help="refresh forever every N seconds")
+    parser.add_argument("--version", action="version", version=f"worknow {__version__}")
     args = parser.parse_args(argv)
 
-    cfg_path = write_default_config_if_missing() if args.config_init else expand("~/.config/worknow/config.toml")
+    if args.config_init:
+        write_default_config_if_missing()
     config = load_config()
     if args.output:
         config["output"] = args.output
 
-    while True:
-        output = generate(config)
-        print(f"Updated {output}")
-        if not args.watch:
-            break
-        time.sleep(max(args.watch, 10))
+    try:
+        while True:
+            output = generate(config)
+            print(f"Updated {output}")
+            if not args.watch:
+                break
+            time.sleep(max(args.watch, 10))
+    except KeyboardInterrupt:
+        return 130
     return 0
 
 

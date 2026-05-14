@@ -1,10 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
-SOURCE="${BASH_SOURCE[0]}"
-DIR="$(SOURCE="$SOURCE" python3 - <<'PY'
-import os, pathlib
-source = pathlib.Path(os.environ['SOURCE']).expanduser()
-print(source.resolve().parent.parent)
-PY
-)"
-PYTHONPATH="$DIR/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m worknow.cli "$@"
+
+# Resolve through symlinks (portable; doesn't need GNU `readlink -f`).
+SCRIPT="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT" ]; do
+  TARGET="$(readlink "$SCRIPT")"
+  case "$TARGET" in
+    /*) SCRIPT="$TARGET" ;;
+    *)  SCRIPT="$(dirname "$SCRIPT")/$TARGET" ;;
+  esac
+done
+DIR="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
+
+# Pick a Python ≥ 3.11 (worknow uses stdlib tomllib).
+PYTHON=""
+for candidate in python3.14 python3.13 python3.12 python3.11 python3; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+      PYTHON="$candidate"
+      break
+    fi
+  fi
+done
+
+if [ -z "$PYTHON" ]; then
+  echo "worknow: requires Python >= 3.11 in PATH" >&2
+  exit 1
+fi
+
+# Homebrew Python on macOS needs brew's libexpat for pyexpat-based stdlib;
+# add it if present, harmless otherwise.
+if [ -d /opt/homebrew/opt/expat/lib ]; then
+  export DYLD_LIBRARY_PATH="/opt/homebrew/opt/expat/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+fi
+
+PYTHONPATH="$DIR/src${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON" -m worknow.cli "$@"

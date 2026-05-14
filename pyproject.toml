@@ -7,12 +7,33 @@ name = "worknow"
 version = "0.1.0"
 description = "Automatically track active coding work across local agent windows and git projects"
 readme = "README.md"
-requires-python = ">=3.9"
+license = { text = "MIT" }
 authors = [{ name = "Qun" }]
+requires-python = ">=3.11"
 dependencies = []
+keywords = ["cli", "git", "productivity", "macos", "developer-tools"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+    "Topic :: Utilities",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
 
 [project.scripts]
 worknow = "worknow.cli:main"
+
+[project.urls]
+Repository = "https://github.com/nuqiewuoz/worknow"
 
 [tool.setuptools.packages.find]
 where = ["src"]
