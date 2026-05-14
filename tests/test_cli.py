@@ -285,10 +285,13 @@ def test_render_json_includes_active_count():
             changes="clean", last_commit="z", recent_commits=[],
         ),
     ]
-    payload = _json.loads(cli.render_json(projects, [], ""))
-    assert payload["schema_version"] == 1
-    # Active: /tmp/a (dirty), /tmp/b (agent). Not /tmp/c.
-    assert payload["active_tasks_count"] == 2
+    payload = _json.loads(cli.render_json(projects, [], "", sessions=[]))
+    assert payload["schema_version"] == 2
+    # active_tasks_count now reflects sessions; with none passed, it's 0.
+    assert payload["active_tasks_count"] == 0
+    assert payload["active_sessions_count"] == 0
+    # The repo-based count moved to its own field.
+    assert payload["dirty_repo_count"] == 2
     assert len(payload["repos"]) == 3
     # Active repos sorted to the top.
     assert payload["repos"][0]["is_active"] is True

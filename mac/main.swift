@@ -7,9 +7,24 @@ struct WorknowSnapshot: Decodable {
     let generated_at: String
     let host: String
     let active_tasks_count: Int
+    let active_sessions_count: Int?
+    let dirty_repo_count: Int?
+    let sessions: [Session]?
     let repos: [Repo]
     let processes: [Proc]
     let sessions_text: String
+
+    struct Session: Decodable {
+        let agent: String
+        let session_id: String
+        let cwd: String?
+        let last_activity: String
+        let last_user_message: String?
+        let last_assistant_summary: String?
+        let host: String
+        let status: String   // "active" | "done"
+        let pid: String?
+    }
 
     struct Repo: Decodable {
         let name: String
@@ -202,40 +217,71 @@ final class WorknowContentView: NSView {
             addEmpty("No snapshot yet. Run `worknow` once.")
             return
         }
-        countLabel.stringValue = "\(snap.active_tasks_count) \(snap.active_tasks_count == 1 ? "task" : "tasks")"
+        countLabel.stringValue = "\(snap.active_tasks_count) \(snap.active_tasks_count == 1 ? "session" : "sessions")"
         updatedLabel.stringValue = relativeUpdatedLabel(isoString: snap.generated_at)
 
-        let active = snap.repos.filter { $0.is_active }
-        let idle = snap.repos.filter { !$0.is_active }
-        let relevantProcesses = processesInsideTrackedRepos(snap)
+        let sessions = snap.sessions ?? []
+        let dirtyRepos = snap.repos.filter { $0.dirty }
 
-        if !active.isEmpty {
-            addSectionHeader("Active")
-            for repo in active { stack.addArrangedSubview(repoRow(repo)) }
+        if !sessions.isEmpty {
+            addSectionHeader("Sessions")
+            for sess in sessions { stack.addArrangedSubview(sessionRow(sess)) }
         }
-        if !relevantProcesses.isEmpty {
-            addSectionHeader("Agents")
-            for proc in relevantProcesses.prefix(10) { stack.addArrangedSubview(processRow(proc)) }
+        if !dirtyRepos.isEmpty {
+            addSectionHeader("Repos with changes")
+            for repo in dirtyRepos { stack.addArrangedSubview(repoRow(repo, dim: true)) }
         }
-        if !idle.isEmpty {
-            addSectionHeader("Other tracked repos")
-            for repo in idle.prefix(8) { stack.addArrangedSubview(repoRow(repo, dim: true)) }
-        }
-        if active.isEmpty && relevantProcesses.isEmpty {
+        if sessions.isEmpty && dirtyRepos.isEmpty {
             addEmpty("No active work right now.")
         }
     }
 
-    /// Only surface agent processes whose cwd is inside a tracked repo —
-    /// the keyword scan in the CLI picks up plenty of infrastructure
-    /// (Claude.app helpers, MCP servers, plugin daemons) that match
-    /// `claude` / `bun` / `node` etc. but don't reflect actual work.
-    private func processesInsideTrackedRepos(_ snap: WorknowSnapshot) -> [WorknowSnapshot.Proc] {
-        let repoPaths = snap.repos.map { $0.path }
-        return snap.processes.filter { proc in
-            guard let cwd = proc.cwd else { return false }
-            return repoPaths.contains { cwd == $0 || cwd.hasPrefix($0 + "/") }
+    private func sessionRow(_ sess: WorknowSnapshot.Session) -> NSView {
+        let dot = NSTextField(labelWithString: sess.status == "active" ? "🟢" : "✓")
+        dot.font = NSFont.systemFont(ofSize: 10)
+
+        let cwdLabel = (sess.cwd as NSString?)?.lastPathComponent ?? "—"
+        let title = NSTextField(labelWithString: cwdLabel)
+        title.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        title.textColor = sess.status == "active" ? .labelColor : .secondaryLabelColor
+        title.lineBreakMode = .byTruncatingTail
+        title.usesSingleLineMode = true
+
+        let headerRow = NSStackView(views: [dot, title])
+        headerRow.orientation = .horizontal
+        headerRow.spacing = 4
+
+        let metaText = "\(sess.agent) · \(sess.host) · \(relativeFromIso(sess.last_activity))"
+        let meta = NSTextField(labelWithString: metaText)
+        meta.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        meta.textColor = .secondaryLabelColor
+
+        var rowViews: [NSView] = [headerRow, meta]
+        if let msg = sess.last_user_message, !msg.isEmpty {
+            let msgLabel = NSTextField(wrappingLabelWithString: "“\(msg)”")
+            msgLabel.font = NSFont.systemFont(ofSize: 11)
+            msgLabel.textColor = .tertiaryLabelColor
+            msgLabel.maximumNumberOfLines = 2
+            msgLabel.lineBreakMode = .byTruncatingTail
+            rowViews.append(msgLabel)
         }
+
+        let row = NSStackView(views: rowViews)
+        row.orientation = .vertical
+        row.alignment = .leading
+        row.spacing = 2
+        return row
+    }
+
+    private func relativeFromIso(_ iso: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = formatter.date(from: iso) else { return iso }
+        let elapsed = Int(Date().timeIntervalSince(date))
+        if elapsed < 5 { return "just now" }
+        if elapsed < 60 { return "\(elapsed)s ago" }
+        if elapsed < 3600 { return "\(elapsed / 60)m ago" }
+        return "\(elapsed / 3600)h ago"
     }
 
     private func addSectionHeader(_ text: String) {

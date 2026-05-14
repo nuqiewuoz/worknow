@@ -15,6 +15,7 @@ import tomllib
 from typing import Iterable
 
 from worknow import __version__
+from worknow import sessions as sessions_mod
 
 
 DEFAULT_CONFIG: dict = {
@@ -279,13 +280,40 @@ def attach_agent_presence(projects: list[GitProject], processes: list[ProcessInf
         )
 
 
-def render_json(projects: list[GitProject], processes: list[ProcessInfo], sessions_text: str) -> str:
+def render_json(
+    projects: list[GitProject],
+    processes: list[ProcessInfo],
+    sessions_text: str,
+    sessions: list[sessions_mod.Session] | None = None,
+) -> str:
     now = dt.datetime.now().astimezone().isoformat()
+    sessions = sessions or []
+    active_sessions_count = len(sessions)
     payload = {
-        "schema_version": 1,
+        # Bumped to 2 with the sessions[] addition; UI clients should
+        # tolerate either by feature-detecting the `sessions` key.
+        "schema_version": 2,
         "generated_at": now,
         "host": platform.node(),
-        "active_tasks_count": sum(1 for p in projects if p.is_active),
+        # `active_tasks_count` now reflects agent sessions, not dirty repos.
+        # The old repo-only count remains available as `dirty_repo_count`.
+        "active_tasks_count": active_sessions_count,
+        "active_sessions_count": active_sessions_count,
+        "dirty_repo_count": sum(1 for p in projects if p.is_active),
+        "sessions": [
+            {
+                "agent": s.agent,
+                "session_id": s.session_id,
+                "cwd": s.cwd,
+                "last_activity": s.last_activity_iso,
+                "last_user_message": s.last_user_message,
+                "last_assistant_summary": s.last_assistant_summary,
+                "host": s.host,
+                "status": s.status,
+                "pid": s.pid,
+            }
+            for s in sessions
+        ],
         "repos": [
             {
                 "name": p.path.name,
@@ -376,12 +404,13 @@ def generate(config: dict) -> pathlib.Path:
     )
     attach_agent_presence(projects, processes)
     sessions_text = openclaw_sessions()
+    discovered_sessions = sessions_mod.discover()
     output = expand(str(config["output"]))
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render(projects, processes, sessions_text, config))
     # Sidecar JSON for native UIs (e.g. mac/ menu bar app).
     json_output = output.with_suffix(".json")
-    json_output.write_text(render_json(projects, processes, sessions_text))
+    json_output.write_text(render_json(projects, processes, sessions_text, discovered_sessions))
     return output
 
 
