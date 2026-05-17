@@ -1,6 +1,10 @@
 # worknow
 
+[![Ko-fi](https://img.shields.io/badge/Support-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/nvwalj)
+
 A small local CLI that builds an automatically maintained view of active coding work across your machines.
+
+> **See also:** [AI Memory Reader](https://github.com/nvwalj/ai-memory-reader) — native macOS & iOS app for browsing the `~/.openclaw/workspace/current-work.md` file this tool writes (plus Claude Code, Codex, Cursor, Gemini memory directories).
 
 It scans:
 
